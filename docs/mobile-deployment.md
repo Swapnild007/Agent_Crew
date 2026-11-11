@@ -1,6 +1,6 @@
 # Android access and the ₹0 deployment candidate
 
-Assessment date 11 November 2026. The selected configuration is an Oracle Always Free Ubuntu VM, a persistent local SQLite database, Bubblewrap, and Tailscale Serve on a Personal tailnet. The Android browser accesses the private HTTPS origin. Tailscale authenticates the device and owner account. Agent_Crew separately verifies the owner login header and requires its existing password and revocable session. Node and the mission worker listen only on loopback. Neither runs at a public endpoint.
+Assessment date 11 November 2026. The selected configuration is an Oracle Always Free Ubuntu VM, a persistent local SQLite database, Bubblewrap, and Tailscale Serve on a Personal tailnet. The Android browser accesses the private HTTPS origin. Tailscale authenticates the device and owner account. Agent_Crew separately verifies the owner login header and requires its existing password and revocable session. Node listens only on loopback. The mission worker has no separate listener.
 
 ## Hosting assessment
 

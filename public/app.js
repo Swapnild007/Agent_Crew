@@ -5,7 +5,7 @@ const nav = document.querySelector('nav');
 const indicator = document.querySelector('#connection');
 const feedback = document.querySelector('#feedback');
 let state, live, selected, filter = '', query = '', activeView, pendingRender = false;
-let toastTimer, recoveryTimer;
+let toastTimer, recoveryTimer, sessionEpoch=0;
 const escape = value => String(value ?? '').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const label = value => value.replaceAll('_',' ');
 const date = value => new Date(value).toLocaleString();
@@ -15,6 +15,7 @@ const button = (text,action,id='',primary=false) => '<button type="button" data-
 const empty = text => '<p class="muted">'+text+'</p>';
 const eventList = items => items.map(e=>'<details><summary>'+escape(label(e.kind))+' · <small>'+escape(date(e.created))+'</small></summary><pre>'+escape(e.detail)+'</pre></details>').join('') || empty('No matching events.');
 async function api(path,method='GET',data) {
+  const epoch=sessionEpoch;
   if(!navigator.onLine) throw Error('Offline. Reconnect to continue.');
   let result;
   try {
@@ -24,7 +25,7 @@ async function api(path,method='GET',data) {
     throw Error('Connection unavailable. Reconnect and check the latest mission status.');
   }
   const payload = await result.json();
-  if (result.status === 401 && path !== '/login') showLogin(state?'Your session ended. Sign in again.':undefined);
+  if (result.status === 401 && path !== '/login' && epoch===sessionEpoch) showLogin(state?'Your session ended. Sign in again.':undefined);
   if (!result.ok) throw Error(payload.error);
   return payload;
 }
@@ -35,6 +36,7 @@ function notify(message) {
   toastTimer = setTimeout(()=>feedback.hidden=true,4500);
 }
 function showLogin(message='Open the Agent_Crew workspace with your owner password.') {
+  sessionEpoch++;
   clearTimeout(recoveryTimer);
   live?.close();
   live = undefined;
@@ -48,8 +50,9 @@ function showLogin(message='Open the Agent_Crew workspace with your owner passwo
 }
 async function refresh(force=false) {
   const previousSelection=selected;
+  const epoch=sessionEpoch;
   const next = await api('/workspace'+(selected?'?graph='+encodeURIComponent(selected):''));
-  if(previousSelection!==selected) return;
+  if(previousSelection!==selected||epoch!==sessionEpoch) return;
   if(!selected && next.missions[0]?.repository) {
     selected=next.missions[0].id;
     return refresh(force);
@@ -192,7 +195,7 @@ main.addEventListener('submit',async event=>{
   const submitter=event.submitter;
   if(submitter) submitter.disabled=true;
   try {
-    if(kind==='login') { await api('/login','POST',data); await refresh(true); connect(); return; }
+    if(kind==='login') { await api('/login','POST',data); sessionEpoch++; await refresh(true); connect(); return; }
     if(kind==='search') { query=data.query; render(true); return; }
     if(kind==='mission') {
       if(submitter?.value==='sample') delete data.repository;

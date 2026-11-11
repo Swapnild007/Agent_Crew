@@ -1,4 +1,5 @@
 """Exercise the HTTPS trust boundary with a touch/mobile Chromium profile."""
+import hashlib
 import http.client
 import json
 import os
@@ -152,6 +153,13 @@ with tempfile.TemporaryDirectory() as directory:
             for path in ['/workspace', '/events', '/missions/12345678-1234-1234-1234-123456789abc/artifact']:
                 assert request(server.server_port, '/api/v1' + path)[0] == 401
             assert json.loads(request(server.server_port, '/manifest.webmanifest')[2])['display'] == 'standalone'
+            old_session = secrets.token_hex(32)
+            with sqlite3.connect(temp / 'data' / 'crew.sqlite', timeout=5) as database:
+                database.execute("INSERT INTO sessions(hash,expires,scope) VALUES(?,?,'local')",
+                                 (hashlib.sha256(old_session.encode()).hexdigest(), int(time.time() * 1000) + 60000))
+            assert request(server.server_port, '/api/v1/workspace',
+                           headers={'Cookie': '__Host-crew_session=' + old_session})[0] == 401
+
             sign_in(page, origin)
             session = next(item for item in phone.cookies() if item['name'] == '__Host-crew_session')
             assert session['secure'] and session['httpOnly'] and session['sameSite'] == 'Strict' and session['path'] == '/'
@@ -179,7 +187,7 @@ with tempfile.TemporaryDirectory() as directory:
             else:
                 sample(page, 'Inspect the sample receipt').get_by_role('button', name='Approve verification').tap()
             navigate(page, 'Execution Terminal')
-            expect(page.get_by_text('tool invoked', exact=False).first).to_be_visible()
+            expect(page.locator('summary').filter(has_text='tool invoked').first).to_be_visible()
             phone.set_offline(True)
             expect(page.locator('#connection')).to_have_text('Offline')
             phone.set_offline(False)
@@ -220,6 +228,10 @@ with tempfile.TemporaryDirectory() as directory:
             page.get_by_role('button', name='Sign out').tap()
             expect(page.get_by_role('heading', name='Sign in')).to_be_visible()
             assert request(server.server_port, '/api/v1/workspace')[0] == 401
+            for expected_status in [401, 401, 401, 401, 401, 429]:
+                assert request(server.server_port, '/api/v1/login', method='POST', headers={
+                    'Origin': origin, 'X-Crew-Request': '1', 'Content-Type': 'application/json'
+                }, data=json.dumps({'password': PASSWORD[1:]}))[0] == expected_status
             assert not errors, errors
             chromium.close()
             print('Private HTTPS mobile Chromium workflow passed, including offline recovery, expiry, revocation and download')
