@@ -6,17 +6,40 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-24.04
+    env:
+      AGENT_CREW_REQUIRE_SANDBOX: '1'
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: node --check runtime.mjs && node --check server.mjs && node --check public/app.js
+      - name: Enable Bubblewrap user namespaces on this disposable runner
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bubblewrap
+          sudo install -m 644 /dev/stdin /etc/apparmor.d/agent-crew-bwrap <<'PROFILE'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile agent-crew-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+          sudo apparmor_parser -r /etc/apparmor.d/agent-crew-bwrap
+      - run: find . -name '*.mjs' -o -name '*.js' | xargs -r -n 1 node --check
       - run: npm test
-      - run: pip install playwright==1.57.0
+      - run: npm audit --omit=dev --audit-level=high
+      - run: pip install playwright==1.57.0 pip-audit==2.9.0 detect-secrets==1.5.0
+      - name: Scan Python QA dependencies
+        run: pip-audit -r test/requirements.txt
+      - name: Scan tracked files for secrets
+        run: |
+          detect-secrets scan > /tmp/agent-crew-secret-report.json
+          python -c 'import json; hits=json.load(open("/tmp/agent-crew-secret-report.json"))["results"]; print("Flagged paths:", ", ".join(hits) or "none"); raise SystemExit(bool(hits))'
       - run: python -m playwright install --with-deps chromium
       - run: python test/browser.py
         env:

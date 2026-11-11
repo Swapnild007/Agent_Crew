@@ -1,15 +1,21 @@
-# Local threat model
+# Owner access and repository isolation
 
-Protected assets include the owner account, session tokens, objective text, logs, notes, and verification evidence. The trust boundary is the loopback HTTP service plus the operating system account that owns its SQLite files. The browser may submit untrusted text. Only bundled, reviewed code runs in this process. The browser escapes user text and source evidence before rendering them.
+The protected assets are sessions, provider credentials, approved source, mission objectives and evidence. The trusted computing base includes the owner's OS account, Node, the system Git binary, Bubblewrap, Linux namespace configuration and the owner-controlled Git directories. Browser and model inputs and repository source are untrusted.
 
-| Threat | Control in this draft |
+| Threat | Enforcement |
 |---|---|
-| Unauthenticated API or stream | Server-side owner session lookup on each request. Streams recheck validity before each event batch. |
-| Session theft or replay | 256-bit random tokens, token digests at rest, HttpOnly and SameSite=Strict, 30-minute expiry, session revocation and local rotation. |
-| Cross-site requests and DNS rebinding | Exact loopback Host, exact Origin and custom header on writes. No CORS. |
-| Login guessing | Persistent owner login throttling and scrypt password hashing. |
-| Arbitrary command execution and prompt injection | No LLM, dynamic tools, shell, uploads, network tools, or plugin activation. The request body cannot choose a script or path. |
-| Unauthorized approval | Per-mission state and expiry enforced transactionally. Verification requires a recorded approval. Dispatch can be paused. |
-| Artifact tampering | SHA-256 stored at artifact creation and verified on read. A compromised database writer is outside this integrity boundary. |
+| Anonymous access | Bootstrap and rotate through the OS account. No public registration. Server session check for protected endpoints and periodic revalidation of open SSE streams. Per-session and total stream limits. |
+| Guessing, replay and CSRF | scrypt password hashes, persistent login and reauthentication throttles, random hashed 30-minute session tokens, logout and rotation revocation, strict same-site HTTP-only cookies, exact loopback Host and Origin, and a custom header on writes. |
+| Tool scope or approval bypass | Approval records exact alias, pinned commit, provider and action. Workers recheck authorization and current role before each call. Unknown paths, commands, roles and schemas fail. Removing an entry cancels its active missions. |
+| Arbitrary source execution | Fixed absolute executable paths and fixed Git plumbing commands. No shells, hooks, checkout scripts, submodules, filters, upload processing, code execution or repo modification. Each call uses a new Bubblewrap namespace, drops capabilities and exposes only read-only /usr and the registered Git directory plus minimal /dev. No host network namespace, home, database, or environment secrets. prlimit caps CPU, memory, descriptors and core output. Node caps wall time and captured bytes. A failed namespace probe disables repository missions. |
+| Source and model injection | Repository content is untrusted context. Strict schemas and a separate policy layer constrain tools to a catalog of regular tracked files with safe paths. Symlinks, nested repositories, binary and over-limit files are excluded. Blob identities and source excerpts are independently checked. Models cannot extend authority. |
+| Credentials and accidental disclosure | Credentials are injected server-side or stored in an AES-256-GCM envelope with a separately provisioned master key. Requests, response bodies, and credential values are omitted from events. Obvious secrets in source and sensitive filenames are filtered. Heuristic filtering cannot guarantee discovery of every secret. Review and approve external disclosure before using the OpenAI adapter. |
+| Evidence changes | Reports store SHA-256 and the server verifies it before serving. Git blob identities are checked before reading. Database writers and changes by the owner's OS account remain outside the integrity boundary. |
 
-Local HTTP does not use a Secure cookie or TLS. Do not publish this service on a network or put it behind a public proxy. Hosted use requires a reviewed TLS and private access design, Secure cookie, passkeys or MFA, scoped machine credentials, monitored security controls, and an independent isolation boundary before introducing untrusted execution. A host administrator or a process running as the owner can read or modify the database. At-rest encryption relies on the host volume. Existing approvals authorize only the bundled fixture operation.
+Only authorize private, owner-controlled Git storage. Use an independently staged Git directory for repositories from other parties. Keep system Git, the browser, the kernel and Bubblewrap patched. A private host and volume encryption are required for data at rest. Secure the master key separately from encrypted credential backups. Tool logs contain permitted file paths, and persisted evidence contains cited excerpts. Provider-side storage and retention follow provider account terms. Setting store=false is not a guarantee of zero provider retention.
+
+## Hosted access and passkeys
+
+The current loopback listener uses HTTP. Production authentication and network topology are unvalidated. Keep it local. A future private deployment should use a private network or zero-trust gateway and a separately reviewed HTTPS relying party with a stable hostname. WebAuthn needs a secure context and an RP ID tied to that hostname. Provision one immutable owner identity, require user verification, validate origin, RP ID, challenge and authenticator data server-side, enroll at least two passkeys or a controlled recovery method, and revoke application sessions on credential changes. Use Secure cookies and explicit trusted proxy boundaries. Verify onboarding, recovery, revocation, SSE and unauthorized access on the actual deployment before treating that gate as complete. Do not expose an execution runtime or database directly to the public internet.
+
+References for implementation review: [Bubblewrap](https://github.com/containers/bubblewrap), [Web Authentication API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Authentication_API), and [OWASP CSRF guidance](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).

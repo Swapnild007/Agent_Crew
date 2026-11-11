@@ -4,6 +4,10 @@ import { resolve } from 'node:path';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { createRuntime, digest, plan } from './runtime.mjs';
+import { createProvider } from './provider.mjs';
+import { readCredential, storeCredential } from './credentials.mjs';
+import { createRepositoryInspector, identifier, redact } from './repository.mjs';
+import { capabilities, createInvestigation } from './investigation.mjs';
 
 process.umask(0o077);
 const data = resolve(process.env.AGENT_CREW_DATA || 'data');
@@ -11,12 +15,19 @@ mkdirSync(data,{recursive:true,mode:0o700});
 const db = new DatabaseSync(resolve(data,'crew.sqlite'));
 chmodSync(resolve(data,'crew.sqlite'),0o600);
 db.exec('PRAGMA busy_timeout=4000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON');
-if (!db.prepare('PRAGMA user_version').get().user_version) {
-  db.exec('BEGIN IMMEDIATE');
-  db.exec(readFileSync(new URL('./schema.sql',import.meta.url),'utf8'));
+const versions = ['schema.sql','migrations/002.sql'];
+db.exec('BEGIN IMMEDIATE');
+try {
+  const version=db.prepare('PRAGMA user_version').get().user_version;
+  if(version>versions.length) throw new Error('Database version is newer than this service');
+  for(const migration of versions.slice(version))
+    db.exec(readFileSync(new URL('./'+migration,import.meta.url),'utf8'));
   db.exec('COMMIT');
+} catch(error) {
+  db.exec('ROLLBACK');
+  throw error;
 }
-const runtime = createRuntime(db);
+const runtime = createRuntime(db,{repositoryMissions:true});
 const owner = () => db.prepare('SELECT * FROM owner WHERE id=1').get();
 const revoke = () => db.exec('DELETE FROM sessions');
 const audit = (kind, detail) => runtime.event(null,kind,detail);
@@ -33,7 +44,7 @@ if (['bootstrap','rotate'].includes(process.argv[2])) {
     const salt = randomBytes(32).toString('hex');
     db.prepare('INSERT OR REPLACE INTO owner VALUES(1,?,?)').run(salt,passwordHash(password,salt).toString('hex'));
     revoke();
-    db.exec('DELETE FROM auth_limit');
+    db.exec('DELETE FROM auth_limit; DELETE FROM reauth_limit');
     audit(rotate ? 'owner_rotated' : 'owner_bootstrapped','Local owner command');
   });
   db.close();
@@ -41,6 +52,43 @@ if (['bootstrap','rotate'].includes(process.argv[2])) {
   process.exit(0);
 }
 if (!owner()) throw new Error('Bootstrap the owner account before startup.');
+if(process.argv[2]==='store-openai-credential'){
+  storeCredential(data,process.env.AGENT_CREW_SECRET_KEY,readFileSync(0,'utf8').replace(/\r?\n$/,''));
+  audit('credential_rotated','Encrypted OpenAI credential stored through local owner command');
+  db.close();
+  console.log('Encrypted OpenAI credential stored.');
+  process.exit(0);
+}
+const configuredKey=process.env.AGENT_CREW_PROVIDER==='openai'&&!process.env.AGENT_CREW_OPENAI_KEY
+  ? readCredential(data,process.env.AGENT_CREW_SECRET_KEY) : undefined;
+const provider=createProvider({env:{...process.env,AGENT_CREW_OPENAI_KEY:process.env.AGENT_CREW_OPENAI_KEY||configuredKey}});
+const inspector=createRepositoryInspector();
+const investigation=createInvestigation(db,runtime,provider,inspector);
+if(process.argv[2]==='repository'){
+  const [action,name,path,revision]=process.argv.slice(3);
+  try {
+    if(action==='add'&&name&&path&&revision){
+      const repo=await inspector.authorize(name,path,revision);
+      runtime.transaction(()=>{
+        db.prepare('INSERT INTO repositories VALUES(?,?,?,?,?)').run(repo.name,repo.git_dir,repo.revision,repo.device,repo.inode);
+        audit('repository_authorized',repo.name+' · '+repo.revision);
+      });
+      console.log('Authorized '+name+' at '+revision);
+    } else if(action==='remove'&&identifier.test(name||'')){
+      if(!investigation.remove(name)) throw Error('Repository is not authorized');
+      console.log('Revoked '+name);
+    } else {
+      throw Error('Use repository add NAME GIT_DIRECTORY COMMIT_SHA or repository remove NAME');
+    }
+  } catch(error) {
+    console.error(error.code==='ERR_SQLITE_ERROR'?'Repository could not be saved':error.message);
+    process.exitCode=1;
+  }
+  db.close();
+  process.exit(process.exitCode||0);
+}
+const sandboxAvailable=await inspector.status();
+const serializeMission=({lease,lease_until,plan_attempts,...publicFields})=>publicFields;
 const port = Number(process.env.PORT || 4317);
 const origin = 'http://127.0.0.1:'+port;
 const cookie = 'crew_session';
@@ -49,6 +97,18 @@ const json = (res,status,value) => {
   res.end(JSON.stringify(value));
 };
 const issue = (status,message) => Object.assign(new Error(message),{status});
+function reauthenticate(password) {
+  const now=Date.now();
+  const limit=db.prepare('SELECT * FROM reauth_limit WHERE id=1').get();
+  const attempts=limit?.until>now?limit.attempts:0;
+  if(attempts>=5) throw issue(429,'Too many owner verification attempts');
+  if(!verify(password,owner())){
+    db.prepare('INSERT OR REPLACE INTO reauth_limit VALUES(1,?,?)').run(attempts+1,attempts?limit.until:now+300000);
+    audit('reauth_denied','Invalid owner credentials');
+    throw issue(403,'Incorrect owner password');
+  }
+  db.exec('DELETE FROM reauth_limit');
+}
 async function body(req) {
   if (req.headers['content-type']?.split(';')[0] !== 'application/json') throw issue(415,'JSON required');
   const parts = [];
@@ -81,10 +141,15 @@ const staticFiles = new Map([
   ['/', ['index.html','text/html']], ['/app.js',['app.js','text/javascript']], ['/style.css',['style.css','text/css']]
 ].map(([route,[name,type]])=>[route,[readFileSync(new URL('./public/'+name,import.meta.url)),type]]));
 const api = '/api/v1';
+const streamCounts = new Map();
 const recentEvents = db.prepare('SELECT * FROM events WHERE id>? ORDER BY id LIMIT 150');
 function stream(req,res,url) {
   let cursor = Number(req.headers['last-event-id'] || url.searchParams.get('after') || 0);
   if (!Number.isSafeInteger(cursor) || cursor < 0) throw issue(400,'Invalid event cursor');
+  const identity=session(req);
+  const count=streamCounts.get(identity)||0;
+  if(count>=4 || [...streamCounts.values()].reduce((a,b)=>a+b,0)>=24) throw issue(429,'Too many event subscriptions');
+  streamCounts.set(identity,count+1);
   res.writeHead(200,{'Content-Type':'text/event-stream','X-Accel-Buffering':'no'});
   res.write(': connected\n\n');
   const timer = setInterval(()=>{
@@ -94,7 +159,12 @@ function stream(req,res,url) {
       cursor = item.id;
     }
   },500);
-  res.on('close',()=>clearInterval(timer));
+  res.on('close',()=>{
+    clearInterval(timer);
+    const remaining=streamCounts.get(identity)-1;
+    if(remaining) streamCounts.set(identity,remaining);
+    else streamCounts.delete(identity);
+  });
 }
 async function route(req,res) {
   res.setHeader('Cache-Control','no-store');
@@ -140,7 +210,12 @@ async function route(req,res) {
   if (path === api+'/events' && method === 'GET') return stream(req,res,url);
   if (path === api+'/workspace' && method === 'GET') {
     return json(res,200,{
-      missions:db.prepare('SELECT * FROM missions ORDER BY created DESC').all(),
+      missions:db.prepare('SELECT * FROM missions ORDER BY created DESC').all().map(serializeMission),
+      repositories:db.prepare('SELECT name,revision FROM repositories ORDER BY name').all(),
+      agents:investigation.agentConfig(),
+      provider:provider.status,
+      sandboxAvailable,
+      graph:url.searchParams.get('graph')?investigation.publicNodes(url.searchParams.get('graph')):[],
       events:db.prepare('SELECT * FROM events ORDER BY id DESC LIMIT 150').all(),
       artifacts:db.prepare('SELECT mission,hash FROM artifacts').all(),
       notes:db.prepare('SELECT * FROM notes ORDER BY created DESC').all(),
@@ -149,14 +224,35 @@ async function route(req,res) {
       plan
     });
   }
-  if (path === api+'/capabilities' && method === 'GET') return json(res,200,{plan,workflow:'bundled_receipt_review'});
-  if (path === api+'/missions' && method === 'POST') return json(res,201,runtime.create(field((await ownerBody()).objective,600)));
-  const match = path.match(/^\/api\/v1\/missions\/([a-f0-9-]{36})(?:\/(approve|deny|cancel|artifact))?$/);
+  if (path === api+'/capabilities' && method === 'GET') return json(res,200,{plan,workflow:'bundled_receipt_review',agents:investigation.agentConfig(),workflows:['repository_investigation','bundled_receipt_review']});
+  if (path === api+'/missions' && method === 'POST') {
+    const input=await ownerBody();
+    const objective=redact(field(input.objective,600));
+    if(input.repository===undefined || input.repository==='') return json(res,201,serializeMission(runtime.create(objective)));
+    const repository=field(input.repository,40);
+    if(!identifier.test(repository)) throw issue(400,'Invalid repository name');
+    if(!sandboxAvailable) throw issue(503,'Repository isolation unavailable');
+    try { return json(res,201,serializeMission(investigation.create(objective,repository))); }
+    catch(error) { throw issue(error.code==='repository_denied'?403:409,error.message); }
+  }
+  if (path === api+'/agents' && method==='POST') {
+    const {role,enabled,guidance,password}=await ownerBody();
+    if(!capabilities.some(item=>item.role===role)||typeof enabled!=='boolean'||typeof guidance!=='string'||guidance.length>500)
+      throw issue(400,'Invalid agent configuration');
+    reauthenticate(password);
+    runtime.transaction(()=>{
+      db.prepare('INSERT OR REPLACE INTO agent_settings VALUES(?,?,?)').run(role,Number(enabled),redact(guidance));
+      audit('agent_configured',role+(enabled?' enabled':' disabled'));
+    });
+    return json(res,200,{ok:true});
+  }
+  const match = path.match(/^\/api\/v1\/missions\/([a-f0-9-]{36})(?:\/(approve|deny|cancel|artifact|graph))?$/);
   if (match) {
     const [,id,action] = match;
     const mission = runtime.get(id);
     if (!mission) throw issue(404,'Mission not found');
-    if (!action && method === 'GET') return json(res,200,mission);
+    if (!action && method === 'GET') return json(res,200,serializeMission(mission));
+    if (action === 'graph' && method==='GET') return json(res,200,{nodes:investigation.publicNodes(id)});
     if (action === 'artifact' && method === 'GET') {
       const artifact = db.prepare('SELECT body,hash FROM artifacts WHERE mission=?').get(id);
       if (!artifact) throw issue(404,'Artifact not found');
@@ -166,7 +262,8 @@ async function route(req,res) {
     if (['approve','deny','cancel'].includes(action) && method === 'POST') {
       const result = runtime.decide(id,action);
       if (!result) throw issue(409,'Action unavailable in current state');
-      return json(res,200,result);
+      if(action==='cancel') investigation.abort(id);
+      return json(res,200,serializeMission(result));
     }
   }
   if (path === api+'/notes' && method === 'POST') {
@@ -182,27 +279,40 @@ async function route(req,res) {
   if (path === api+'/skills' && method === 'POST') {
     const input = await ownerBody();
     const name = field(input.name,80);
+    const skillTool=input.tool||'catalog_commit';
+    if(!['catalog_commit','read_tracked_text','recheck_citations'].includes(skillTool)) throw issue(400,'Unknown read-only skill capability');
     const description = field(input.description,1000);
     runtime.transaction(()=>{
       const version = db.prepare('SELECT COALESCE(MAX(version),0)+1 version FROM skills WHERE name=?').get(name).version;
-      db.prepare('INSERT INTO skills VALUES(?,?,?)').run(name,version,description);
+      db.prepare('INSERT INTO skills(name,version,description,tool) VALUES(?,?,?,?)').run(name,version,description,skillTool);
       audit('skill_draft','Owner saved a skill draft');
     });
     return json(res,201,{ok:true});
   }
+  if (path === api+'/skills/test' && method === 'POST') {
+    const {name,version}=await ownerBody();
+    if(typeof name!=='string'||!Number.isInteger(version)) throw issue(400,'Invalid skill version');
+    const draft=db.prepare('SELECT * FROM skills WHERE name=? AND version=?').get(name,version);
+    if(!draft) throw issue(404,'Skill draft not found');
+    const grant=capabilities.find(item=>item.tool===draft.tool);
+    if(!grant||grant.role==='Coordinator') throw issue(409,'Skill exceeds read-only policy');
+    audit('skill_tested',grant.role+' · '+draft.tool+' · policy validation only');
+    return json(res,200,{tool:draft.tool,role:grant.role,validated:true,execution:false});
+  }
   if (path === api+'/settings' && method === 'POST') {
     const {paused,password} = await ownerBody();
     if (typeof paused !== 'boolean') throw issue(400,'Invalid pause state');
-    if (!verify(password,owner())) throw issue(403,'Incorrect owner password');
+    reauthenticate(password);
     runtime.transaction(()=>{
       db.prepare('UPDATE settings SET paused=? WHERE id=1').run(Number(paused));
       audit(paused ? 'paused' : 'resumed','Owner changed dispatch state');
     });
+    if(paused) investigation.abort();
     return json(res,200,{ok:true});
   }
   if (['/logout','/logout-all'].some(suffix=>path===api+suffix) && method==='POST') {
     if (path.endsWith('/logout-all')) {
-      if (!verify((await ownerBody()).password,owner())) throw issue(403,'Incorrect owner password');
+      reauthenticate((await ownerBody()).password);
       revoke();
     } else db.prepare('DELETE FROM sessions WHERE hash=?').run(identity);
     audit('logout','Owner session revoked');
@@ -220,10 +330,12 @@ const server = createServer({requestTimeout:10000,headersTimeout:5000},(req,res)
 });
 const timer = setInterval(()=>{
   try { runtime.tick(); } catch(error) { console.error('Dispatch failure',error.code||error.name); }
+  investigation.tick().catch(error=>console.error('Investigation dispatch failure',error.code||error.name));
 },250);
 server.listen(port,'127.0.0.1',()=>console.log('Agent_Crew listening at '+origin));
 for (const signal of ['SIGINT','SIGTERM']) process.on(signal,()=>{
   clearInterval(timer);
+  investigation.abort();
   server.closeAllConnections();
-  server.close(()=>db.close());
+  server.close(()=>{ process.exitCode=0; });
 });

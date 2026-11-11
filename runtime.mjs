@@ -10,7 +10,7 @@ export const plan = [
 ];
 export const digest = value => createHash('sha256').update(value).digest('hex');
 
-export function createRuntime(db, {now = Date.now, delay = 1200} = {}) {
+export function createRuntime(db, {now = Date.now, delay = 1200, repositoryMissions = false} = {}) {
   const event = (mission, kind, detail) => db.prepare(
     'INSERT INTO events(mission,kind,detail,created) VALUES(?,?,?,?)'
   ).run(mission, kind, detail, now());
@@ -35,22 +35,21 @@ export function createRuntime(db, {now = Date.now, delay = 1200} = {}) {
       return get(id);
     });
   }
-  function decide(id, action) {
-    return transaction(() => {
-      const mission = get(id);
-      if (!mission) return;
-      if (action === 'cancel' && ['queued','running','awaiting_approval'].includes(mission.state)) {
-        db.prepare("UPDATE missions SET state='cancelled', approval=CASE WHEN approval='pending' THEN 'cancelled' ELSE approval END WHERE id=?").run(id);
-      } else if (['approve','deny'].includes(action) && mission.state === 'awaiting_approval' && mission.expires > now()) {
-        db.prepare('UPDATE missions SET state=?,approval=?,due=? WHERE id=?')
-          .run(action === 'approve' ? 'running' : 'denied', action, now()+delay,id);
-      } else {
-        return null;
-      }
-      event(id,action,'Owner decision');
-      return get(id);
-    });
+  function decideWithin(id, action) {
+    const mission = get(id);
+    if (!mission) return;
+    if (action === 'cancel' && ['queued','running','awaiting_approval'].includes(mission.state)) {
+      db.prepare("UPDATE missions SET state='cancelled', approval=CASE WHEN approval='pending' THEN 'cancelled' ELSE approval END WHERE id=?").run(id);
+    } else if (['approve','deny'].includes(action) && mission.state === 'awaiting_approval' && mission.expires > now()) {
+      db.prepare('UPDATE missions SET state=?,approval=?,due=? WHERE id=?')
+        .run(action === 'approve' ? 'running' : 'denied', action, now()+delay,id);
+    } else {
+      return null;
+    }
+    event(id,action,'Owner decision');
+    return get(id);
   }
+  const decide = (id,action) => transaction(()=>decideWithin(id,action));
   function tick() {
     transaction(() => {
       const expired = db.prepare("SELECT id FROM missions WHERE state='awaiting_approval' AND expires<=?").all(now());
@@ -59,7 +58,7 @@ export function createRuntime(db, {now = Date.now, delay = 1200} = {}) {
         event(id,'expired','Verification approval expired');
       }
       if (db.prepare('SELECT paused FROM settings WHERE id=1').get().paused) return;
-      const mission = db.prepare("SELECT * FROM missions WHERE state IN ('queued','running') AND due<=? ORDER BY due,id LIMIT 1").get(now());
+      const mission = db.prepare("SELECT * FROM missions WHERE state IN ('queued','running') AND due<=?" + (repositoryMissions ? " AND repository IS NULL" : "") + " ORDER BY due,id LIMIT 1").get(now());
       if (!mission) return;
       const {id,step} = mission;
       const {role,tool} = plan[step];
@@ -92,5 +91,5 @@ export function createRuntime(db, {now = Date.now, delay = 1200} = {}) {
       db.prepare("UPDATE missions SET state='running',step=?,due=? WHERE id=?").run(step+1,now()+delay,id);
     });
   }
-  return {create,decide,tick,get,event,transaction};
+  return {create,decide,decideWithin,tick,get,event,transaction};
 }
