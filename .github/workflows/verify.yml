@@ -1,0 +1,91 @@
+name: Verify Agent_Crew
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    env:
+      AGENT_CREW_REQUIRE_SANDBOX: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Enable Bubblewrap user namespaces on this disposable runner
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bubblewrap
+          sudo install -m 644 /dev/stdin /etc/apparmor.d/agent-crew-bwrap <<'PROFILE'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile agent-crew-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+          sudo apparmor_parser -r /etc/apparmor.d/agent-crew-bwrap
+          bwrap --unshare-all --unshare-user --disable-userns --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 /usr/bin/true
+      - run: find . -name '*.mjs' -o -name '*.js' | xargs -r -n 1 node --check
+      - run: npm test
+      - run: npm audit --omit=dev --audit-level=high
+      - run: pip install playwright==1.57.0 pip-audit==2.9.0 detect-secrets==1.5.0
+      - name: Scan Python QA dependencies
+        run: pip-audit -r test/requirements.txt
+      - run: python -m playwright install --with-deps chromium
+      - run: python test/browser.py
+        env:
+          AGENT_CREW_SCREENSHOTS: docs/screenshots
+      - run: python test/mobile.py
+        env:
+          AGENT_CREW_SCREENSHOTS: docs/screenshots
+      - name: Android-compatible Chromium against the Codespaces HTTPS proxy fixture
+        run: python test/mobile.py
+        env:
+          AGENT_CREW_TEST_CODESPACE: '1'
+          AGENT_CREW_SCREENSHOTS: docs/screenshots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-crew-browser-screenshots
+          path: docs/screenshots/*.png
+      - name: Scan tracked files for secrets
+        run: |
+          detect-secrets scan > /tmp/agent-crew-secret-report.json
+          python - <<'PYTHON'
+          import json
+          hits = json.load(open('/tmp/agent-crew-secret-report.json'))['results']
+          for path, entries in hits.items():
+              for hit in entries:
+                  print(path, hit['line_number'], hit['type'])
+          if not hits:
+              print('No secret findings')
+          raise SystemExit(bool(hits))
+          PYTHON
+
+  codespace-image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build minimal Codespaces image
+        run: docker build --tag agent-crew-codespace --file .devcontainer/Dockerfile .
+      - name: Probe the unprivileged container
+        run: >
+          docker run --rm
+          --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspaces/Agent_Crew,readonly"
+          --workdir /workspaces/Agent_Crew
+          --env CODESPACES=true --env CODESPACE_NAME=agent-crew-qa
+          --env GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN=app.github.dev
+          agent-crew-codespace npm run codespace:check
+      - name: Test Codespaces access, backup, and repository policy in the image
+        run: >
+          docker run --rm
+          --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspaces/Agent_Crew,readonly"
+          --workdir /workspaces/Agent_Crew
+          agent-crew-codespace node --test test/remote.test.mjs test/backup.test.mjs test/repository.test.mjs test/codespace.test.mjs

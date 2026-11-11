@@ -1,0 +1,1 @@
+{"name":"agent-crew","private":true,"type":"module","engines":{"node":">=24"},"scripts":{"start":"node server.mjs","bootstrap":"node server.mjs bootstrap","test":"node --test","codespace:check":"node .devcontainer/check.mjs","codespace:start":"node .devcontainer/check.mjs --start"}}
