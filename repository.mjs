@@ -32,7 +32,7 @@ export function createRepositoryInspector({runner=exec}={}) {
     try {
       const {stdout} = await runner('/usr/bin/prlimit',[
         '--as=805306368','--cpu=3','--nofile=48','--fsize=0','--core=0','--',
-        '/usr/bin/bwrap','--unshare-all','--disable-userns','--die-with-parent','--new-session','--cap-drop','ALL',
+        '/usr/bin/bwrap','--unshare-all','--unshare-user','--disable-userns','--die-with-parent','--new-session','--cap-drop','ALL',
         '--clearenv','--setenv','PATH','/usr/bin','--setenv','HOME','/nonexistent','--setenv','GIT_CONFIG_NOSYSTEM','1',
         '--setenv','GIT_CONFIG_GLOBAL','/dev/null','--setenv','GIT_NO_REPLACE_OBJECTS','1',
         '--setenv','GIT_NO_LAZY_FETCH','1','--setenv','GIT_TERMINAL_PROMPT','0','--setenv','LC_ALL','C',

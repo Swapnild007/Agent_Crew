@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import subprocess
+import secrets
 import tempfile
 import time
 from urllib.request import urlopen
@@ -9,7 +10,7 @@ from playwright.sync_api import sync_playwright, expect
 
 ROOT = Path(__file__).resolve().parents[1]
 ORIGIN = 'http://127.0.0.1:4338'
-PASSWORD = 'browser fixture local test password'
+PASSWORD = secrets.token_hex(24)
 REPOSITORY_TEST = os.environ.get('AGENT_CREW_REQUIRE_SANDBOX') == '1'
 
 

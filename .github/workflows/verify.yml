@@ -30,6 +30,7 @@ jobs:
           }
           PROFILE
           sudo apparmor_parser -r /etc/apparmor.d/agent-crew-bwrap
+          bwrap --unshare-all --unshare-user --disable-userns --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 /usr/bin/true
       - run: find . -name '*.mjs' -o -name '*.js' | xargs -r -n 1 node --check
       - run: npm test
       - run: npm audit --omit=dev --audit-level=high

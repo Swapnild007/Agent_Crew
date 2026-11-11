@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { randomBytes } from 'node:crypto';
 import { createProvider } from '../provider.mjs';
 
+const fixtureCredential=randomBytes(24).toString('hex');
 const env={
   AGENT_CREW_PROVIDER:'openai',AGENT_CREW_MODEL:'gpt-5.4-mini',
-  AGENT_CREW_OPENAI_KEY:'contract-test-placeholder',
+  AGENT_CREW_OPENAI_KEY:fixtureCredential,
   AGENT_CREW_INPUT_USD_MICROS_PER_MILLION:'750000',AGENT_CREW_OUTPUT_USD_MICROS_PER_MILLION:'4500000'
 };
 const fixture=(name,args)=>Response.json({choices:[{finish_reason:'tool_calls',message:{tool_calls:[
@@ -15,7 +17,7 @@ test('OpenAI adapter uses the fixed endpoint, strict tool schema and bounded gen
   const provider=createProvider({env,fetcher:async(url,request)=>{
     assert.equal(url,'https://api.openai.com/v1/chat/completions');
     assert.equal(request.redirect,'error');
-    assert.equal(request.headers.Authorization,'Bearer contract-test-placeholder');
+    assert.equal(request.headers.Authorization,'Bearer '+fixtureCredential);
     const body=JSON.parse(request.body);
     assert.equal(body.model,'gpt-5.4-mini');
     assert.equal(body.store,false);
@@ -23,13 +25,13 @@ test('OpenAI adapter uses the fixed endpoint, strict tool schema and bounded gen
     assert.equal(body.parallel_tool_calls,false);
     assert.equal(body.tools[0].function.strict,true);
     assert.equal(body.tool_choice.function.name,'select_evidence');
-    assert.doesNotMatch(request.body,/contract-test-placeholder/);
+    assert.doesNotMatch(request.body,new RegExp(fixtureCredential));
     return fixture('select_evidence',{paths:['README.md']});
   }});
   const request=provider.prepare('select_evidence',{paths:['README.md']});
   assert.ok(request.reserve>0);
   assert.deepEqual(await request.run(),{value:{paths:['README.md']},usage:{input:410,output:26}});
-  assert.doesNotMatch(JSON.stringify(provider.status),/contract-test-placeholder/);
+  assert.doesNotMatch(JSON.stringify(provider.status),new RegExp(fixtureCredential));
 });
 
 test('malformed calls, wrong tools, unconfigured credentials, timeouts and HTTP errors fail safely',async()=>{

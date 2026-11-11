@@ -11,7 +11,7 @@ Use Node.js 24, its SQLite driver, a single local service, and a dependency-free
 
 The framework comparison is a documentation and public repository review. Package-level runtime compatibility, comparative performance and hosted observability costs were not benchmarked. The fixed pipeline was chosen to verify transaction boundaries and the owner control surface before adding open-ended tool delegation.
 
-## Implemented and pending
+## Milestone 1 checkpoint
 
 - The Coordinator delegates a fixed review to Research, Engineering and Verification. The UI displays their capabilities and the sequence of dependencies.
 - The server provides a versioned owner-session API and authenticated event replay. JAARVIS and SAARTHI are untouched.

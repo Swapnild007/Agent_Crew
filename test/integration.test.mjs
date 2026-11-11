@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { randomBytes } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,7 +13,7 @@ test('owner approval, crash recovery, event replay, artifact, cancellation and a
   const port=4337;
   const origin='http://127.0.0.1:'+port;
   const env={...process.env,AGENT_CREW_DATA:dir,PORT:String(port)};
-  const password='fixture-only local test password';
+  const password=randomBytes(24).toString('hex');
   const bootstrap=spawnSync(process.execPath,['server.mjs','bootstrap'],{input:password,env});
   assert.equal(bootstrap.status,0,bootstrap.stderr.toString());
   assert.notEqual(spawnSync(process.execPath,['server.mjs','bootstrap'],{input:password,env}).status,0);
@@ -43,6 +44,8 @@ test('owner approval, crash recovery, event replay, artifact, cancellation and a
   }
   assert.equal((await request('/workspace')).status,401);
   assert.equal((await request('/events')).status,401);
+  assert.equal((await request('/agents','POST',{role:'Research',enabled:false,guidance:''})).status,401);
+  assert.equal((await request('/skills/test','POST',{name:'sample',version:1})).status,401);
   assert.equal((await request('/missions','POST',{objective:'a'})).status,401);
   assert.equal((await request('/login','POST',{password},{origin:'https://different.invalid'})).status,403);
   assert.equal((await request('/login','POST',{password:'incorrect'})).status,401);
@@ -52,6 +55,12 @@ test('owner approval, crash recovery, event replay, artifact, cancellation and a
   assert.match(setCookie,/HttpOnly; SameSite=Strict/);
   cookie=setCookie.split(';')[0];
   assert.equal((await request('/settings','POST',{password:'wrong',paused:true})).status,403);
+  assert.equal((await request('/agents','POST',{role:'Research',enabled:false,guidance:'',password:'wrong'})).status,403);
+  assert.equal((await request('/agents','POST',{role:'Shell',enabled:true,guidance:'',password})).status,400);
+  assert.equal((await request('/skills','POST',{name:'restricted',description:'invalid',tool:'run_shell'})).status,400);
+  const workspace=await (await request('/workspace')).json();
+  assert.equal((await request('/missions','POST',{objective:'Read outside allowlist',repository:'unknown'})).status,
+    workspace.sandboxAvailable?403:503);
   const objective='<img src=x onerror=alert(1)> inspect quantities';
   const mission=await (await request('/missions','POST',{objective})).json();
   const path='/missions/'+mission.id;
