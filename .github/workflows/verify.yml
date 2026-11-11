@@ -1,0 +1,27 @@
+name: Verify Agent_Crew
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: node --check runtime.mjs && node --check server.mjs && node --check public/app.js
+      - run: npm test
+      - run: pip install playwright==1.57.0
+      - run: python -m playwright install --with-deps chromium
+      - run: python test/browser.py
+        env:
+          AGENT_CREW_SCREENSHOTS: docs/screenshots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-crew-browser-screenshots
+          path: docs/screenshots/*.png
