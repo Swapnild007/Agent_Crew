@@ -32,8 +32,8 @@ const owner = () => db.prepare('SELECT * FROM owner WHERE id=1').get();
 const revoke = () => db.exec('DELETE FROM sessions');
 const audit = (kind, detail) => runtime.event(null,kind,detail);
 const passwordHash = (password,salt) => scryptSync(password,salt,64);
-const verify = (password,record) => typeof password === 'string' && password.length <= 256 &&
-  timingSafeEqual(passwordHash(password,record.salt),Buffer.from(record.hash,'hex'));
+const verify = (input,record) => typeof input === 'string' && input.length <= 256 &&
+  timingSafeEqual(passwordHash(input,record.salt),Buffer.from(record.hash,'hex'));
 
 if (['bootstrap','rotate'].includes(process.argv[2])) {
   const rotate = process.argv[2] === 'rotate';
@@ -330,7 +330,7 @@ const server = createServer({requestTimeout:10000,headersTimeout:5000},(req,res)
 });
 const timer = setInterval(()=>{
   try { runtime.tick(); } catch(error) { console.error('Dispatch failure',error.code||error.name); }
-  investigation.tick().catch(error=>console.error('Investigation dispatch failure',error.code||error.name));
+  if(sandboxAvailable) investigation.tick().catch(error=>console.error('Investigation dispatch failure',error.code||error.name));
 },250);
 server.listen(port,'127.0.0.1',()=>console.log('Agent_Crew listening at '+origin));
 for (const signal of ['SIGINT','SIGTERM']) process.on(signal,()=>{

@@ -8,12 +8,12 @@ function key(value) {
   if(!/^[a-f0-9]{64}$/i.test(value||'')) throw new Error('Configure a 32-byte hex AGENT_CREW_SECRET_KEY through your secret manager');
   return Buffer.from(value,'hex');
 }
-export function storeCredential(directory,masterKey,secret) {
-  if(typeof secret!=='string'||secret.length<12||secret.length>1000||/\s/.test(secret)) throw new Error('Invalid OpenAI credential');
+export function storeCredential(directory,masterKey,credential) {
+  if(typeof credential!=='string'||credential.length<12||credential.length>1000||/\s/.test(credential)) throw new Error('Invalid OpenAI credential');
   const iv=randomBytes(12);
   const cipher=createCipheriv('aes-256-gcm',key(masterKey),iv);
   cipher.setAAD(aad);
-  const body=Buffer.concat([cipher.update(secret,'utf8'),cipher.final()]);
+  const body=Buffer.concat([cipher.update(credential,'utf8'),cipher.final()]);
   const data=Buffer.concat([iv,cipher.getAuthTag(),body]);
   const destination=pathFor(directory);
   const temp=destination+'.'+randomBytes(10).toString('hex');

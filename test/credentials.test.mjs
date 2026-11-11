@@ -10,7 +10,7 @@ test('encrypted credential persists ciphertext, rejects tampering and supports r
   const directory=mkdtempSync(join(tmpdir(),'crew-credential-'));
   t.after(()=>rmSync(directory,{recursive:true,force:true}));
   const key=randomBytes(32).toString('hex');
-  const secret='unit-test-'+randomBytes(12).toString('hex');
+  const secret=randomBytes(24).toString('hex');
   const path=join(directory,'openai.enc');
   assert.equal(readCredential(directory,key),undefined);
   storeCredential(directory,key,secret);

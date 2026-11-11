@@ -37,10 +37,6 @@ jobs:
       - run: pip install playwright==1.57.0 pip-audit==2.9.0 detect-secrets==1.5.0
       - name: Scan Python QA dependencies
         run: pip-audit -r test/requirements.txt
-      - name: Scan tracked files for secrets
-        run: |
-          detect-secrets scan > /tmp/agent-crew-secret-report.json
-          python -c 'import json; hits=json.load(open("/tmp/agent-crew-secret-report.json"))["results"]; print("Flagged paths:", ", ".join(hits) or "none"); raise SystemExit(bool(hits))'
       - run: python -m playwright install --with-deps chromium
       - run: python test/browser.py
         env:
@@ -49,3 +45,16 @@ jobs:
         with:
           name: agent-crew-browser-screenshots
           path: docs/screenshots/*.png
+      - name: Scan tracked files for secrets
+        run: |
+          detect-secrets scan > /tmp/agent-crew-secret-report.json
+          python - <<'PYTHON'
+          import json
+          hits = json.load(open('/tmp/agent-crew-secret-report.json'))['results']
+          for path, entries in hits.items():
+              for hit in entries:
+                  print(path, hit['line_number'], hit['type'])
+          if not hits:
+              print('No secret findings')
+          raise SystemExit(bool(hits))
+          PYTHON

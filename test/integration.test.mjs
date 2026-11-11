@@ -14,6 +14,7 @@ test('owner approval, crash recovery, event replay, artifact, cancellation and a
   const origin='http://127.0.0.1:'+port;
   const env={...process.env,AGENT_CREW_DATA:dir,PORT:String(port)};
   const password=randomBytes(24).toString('hex');
+  const incorrect=password.slice(1);
   const bootstrap=spawnSync(process.execPath,['server.mjs','bootstrap'],{input:password,env});
   assert.equal(bootstrap.status,0,bootstrap.stderr.toString());
   assert.notEqual(spawnSync(process.execPath,['server.mjs','bootstrap'],{input:password,env}).status,0);
@@ -48,14 +49,14 @@ test('owner approval, crash recovery, event replay, artifact, cancellation and a
   assert.equal((await request('/skills/test','POST',{name:'sample',version:1})).status,401);
   assert.equal((await request('/missions','POST',{objective:'a'})).status,401);
   assert.equal((await request('/login','POST',{password},{origin:'https://different.invalid'})).status,403);
-  assert.equal((await request('/login','POST',{password:'incorrect'})).status,401);
+  assert.equal((await request('/login','POST',{password:incorrect})).status,401);
   const login=await request('/login','POST',{password});
   assert.equal(login.status,200);
   const setCookie=login.headers.get('set-cookie');
   assert.match(setCookie,/HttpOnly; SameSite=Strict/);
   cookie=setCookie.split(';')[0];
-  assert.equal((await request('/settings','POST',{password:'wrong',paused:true})).status,403);
-  assert.equal((await request('/agents','POST',{role:'Research',enabled:false,guidance:'',password:'wrong'})).status,403);
+  assert.equal((await request('/settings','POST',{password:incorrect,paused:true})).status,403);
+  assert.equal((await request('/agents','POST',{role:'Research',enabled:false,guidance:'',password:incorrect})).status,403);
   assert.equal((await request('/agents','POST',{role:'Shell',enabled:true,guidance:'',password})).status,400);
   assert.equal((await request('/skills','POST',{name:'restricted',description:'invalid',tool:'run_shell'})).status,400);
   const workspace=await (await request('/workspace')).json();
