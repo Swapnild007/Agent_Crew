@@ -1,0 +1,9 @@
+{
+  "tagOwners": { "tag:agent-crew": ["owner@example.invalid"] },
+  "grants": [
+    { "src": ["owner@example.invalid"], "dst": ["tag:agent-crew"], "ip": ["tcp:443", "tcp:22"] }
+  ],
+  "ssh": [
+    { "action": "check", "src": ["owner@example.invalid"], "dst": ["tag:agent-crew"], "users": ["ubuntu"] }
+  ]
+}

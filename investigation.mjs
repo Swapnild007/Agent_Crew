@@ -58,7 +58,7 @@ export function createInvestigation(db,runtime,provider,inspector,{now=Date.now,
       db.prepare(`INSERT INTO missions(id,objective,state,created,due,approval,expires,repository,revision,provider)
         VALUES(?,?,'awaiting_approval',?,?,'pending',?,?,?,?)`)
         .run(id,objective,now(),now(),now()+900000,repo.name,repo.revision,provider.name);
-      event(id,'approval_requested',`Allow read-only inspection of ${repo.name} at ${repo.revision} via ${provider.name}. ${provider.name==='openai'?'The configured provider will receive the objective and selected redacted text.':'Model processing stays local.'}`);
+      event(id,'approval_requested',`Allow read-only inspection of ${repo.name} at ${repo.revision} via ${provider.name}. ${provider.name!=='mock'?'The configured provider will receive the objective and selected redacted text.':'Model processing stays local.'}`);
       return get(id);
     });
   }
@@ -122,6 +122,16 @@ export function createInvestigation(db,runtime,provider,inspector,{now=Date.now,
       transaction(()=>{
         authority(work);
         if(get(id).budget_reserved+request.reserve>provider.maxBudget) throw fail('budget_limit','Mission budget exhausted');
+        if(provider.daily){
+          const day=new Date(now()).toISOString().slice(0,10);
+          const usage=db.prepare('SELECT requests,tokens FROM provider_daily WHERE provider=? AND day=?')
+            .get(provider.name,day)||{requests:0,tokens:0};
+          const tokens=request.reservedTokens;
+          if(usage.requests+1>provider.daily.requests||usage.tokens+tokens>provider.daily.tokens)
+            throw fail('free_quota_limit','Local daily inference allowance reached');
+          db.prepare('INSERT OR REPLACE INTO provider_daily VALUES(?,?,?,?)')
+            .run(provider.name,day,usage.requests+1,usage.tokens+tokens);
+        }
         db.prepare('UPDATE missions SET budget_reserved=budget_reserved+? WHERE id=?').run(request.reserve,id);
         event(id,'model_requested',`${role} · ${tool} · ${provider.name}`);
       });

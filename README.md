@@ -49,3 +49,7 @@ Only non-secret status appears in System Settings. Restart to load changed envir
 - `pip install -r test/requirements.txt` and `python -m playwright install chromium` set up browser QA. Run `python test/browser.py` from the checkout with AGENT_CREW_REQUIRE_SANDBOX=1 to include the authorized checkout workflow and forced restart. Set AGENT_CREW_SCREENSHOTS to write genuine screenshots. CHROMIUM_PATH can point at a compatible system binary.
 
 [Architecture and limitations](docs/architecture.md) · [Threat model and deployment](docs/security.md) · [Versioned API and JAARVIS design](docs/api.md)
+
+## Android and private cloud access
+
+See the [mobile deployment and ₹0 feasibility assessment](docs/mobile-deployment.md) for the conditional OCI and Tailscale design, service configuration, owner provisioning, and inference options. Use `python test/mobile.py` for an HTTPS Chromium test with the Pixel 7 touch profile. It exercises a local TLS test proxy that implements the Serve header contract. It does not require a cloud account or represent a live tailnet or physical Android test.

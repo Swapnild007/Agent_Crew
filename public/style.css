@@ -14,3 +14,16 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#0b1422;padding:14px;
 @media(max-width:850px){.shell{display:block}nav{display:flex;overflow:auto;padding:8px;border-right:0;border-bottom:1px solid var(--line)}header{padding:0 18px}.stats,.steps{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:520px){.split{grid-template-columns:1fr}main{padding:25px 16px}.panel,.stat{padding:14px}}
 .graph{display:grid;gap:12px;margin-bottom:12px}.graph-level{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:12px}.graph-level+.graph-level{border-top:1px solid var(--line);padding-top:12px}.graph-level .panel{margin:0}.graph summary strong{color:var(--violet)}.check{display:flex;align-items:center;gap:8px}.check input{width:auto;margin:0}
+.panel,.row>div,small{overflow-wrap:anywhere}
+@media(max-width:620px){
+  header{min-height:56px;gap:10px}
+  .brand{font-size:18px}
+  #connection{font-size:.75rem;text-align:right}
+  nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;padding:9px;background:#0e1624}
+  nav a{display:flex;align-items:center;justify-content:center;min-height:44px;margin:0;padding:4px;text-align:center;white-space:normal;line-height:1.2;font-size:.78rem}
+  button,input:not([type=checkbox]),select,summary{min-height:44px}
+  input:not([type=checkbox]),textarea,select{font-size:16px}
+  summary{align-content:center}
+  form>button{margin-bottom:6px}
+  .graph-level{grid-template-columns:1fr}
+}

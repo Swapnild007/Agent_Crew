@@ -1,0 +1,11 @@
+{
+  "id": "/",
+  "name": "Agent_Crew",
+  "short_name": "Agent_Crew",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#0d1424",
+  "background_color": "#0d1424",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

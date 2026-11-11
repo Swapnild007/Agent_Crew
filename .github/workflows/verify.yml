@@ -41,6 +41,9 @@ jobs:
       - run: python test/browser.py
         env:
           AGENT_CREW_SCREENSHOTS: docs/screenshots
+      - run: python test/mobile.py
+        env:
+          AGENT_CREW_SCREENSHOTS: docs/screenshots
       - uses: actions/upload-artifact@v4
         with:
           name: agent-crew-browser-screenshots

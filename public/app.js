@@ -5,7 +5,7 @@ const nav = document.querySelector('nav');
 const indicator = document.querySelector('#connection');
 const feedback = document.querySelector('#feedback');
 let state, live, selected, filter = '', query = '', activeView, pendingRender = false;
-let toastTimer;
+let toastTimer, recoveryTimer;
 const escape = value => String(value ?? '').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const label = value => value.replaceAll('_',' ');
 const date = value => new Date(value).toLocaleString();
@@ -15,9 +15,16 @@ const button = (text,action,id='',primary=false) => '<button type="button" data-
 const empty = text => '<p class="muted">'+text+'</p>';
 const eventList = items => items.map(e=>'<details><summary>'+escape(label(e.kind))+' · <small>'+escape(date(e.created))+'</small></summary><pre>'+escape(e.detail)+'</pre></details>').join('') || empty('No matching events.');
 async function api(path,method='GET',data) {
-  const result = await fetch('/api/v1'+path,{method,headers:{'X-Crew-Request':'1','Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data)});
+  if(!navigator.onLine) throw Error('Offline. Reconnect to continue.');
+  let result;
+  try {
+    result=await fetch('/api/v1'+path,{method,headers:{'X-Crew-Request':'1','Content-Type':'application/json'},
+      body:data===undefined?undefined:JSON.stringify(data),signal:AbortSignal.timeout(12000)});
+  } catch {
+    throw Error('Connection unavailable. Reconnect and check the latest mission status.');
+  }
   const payload = await result.json();
-  if (result.status === 401 && path !== '/login') showLogin();
+  if (result.status === 401 && path !== '/login') showLogin(state?'Your session ended. Sign in again.':undefined);
   if (!result.ok) throw Error(payload.error);
   return payload;
 }
@@ -27,7 +34,8 @@ function notify(message) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(()=>feedback.hidden=true,4500);
 }
-function showLogin() {
+function showLogin(message='Open the Agent_Crew workspace with your owner password.') {
+  clearTimeout(recoveryTimer);
   live?.close();
   live = undefined;
   state = undefined;
@@ -35,7 +43,7 @@ function showLogin() {
   activeView = undefined;
   nav.hidden = true;
   indicator.textContent = 'Owner access';
-  main.innerHTML = title('Sign in','Open the Agent_Crew workspace with your owner password.')+
+  main.innerHTML = title('Sign in',message)+
     panel('<form data-form="login"><label for="password">Owner password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button class="primary">Sign in</button></form>');
 }
 async function refresh(force=false) {
@@ -54,15 +62,51 @@ async function refresh(force=false) {
   }
 }
 function connect() {
-  if (live) return;
-  live = new EventSource('/api/v1/events?after='+(state.events[0]?.id||0));
-  live.onopen = ()=>{ indicator.textContent = '● Event stream connected'; refresh().catch(error=>notify(error.message)); };
-  live.onmessage = ()=>refresh().catch(error=>notify(error.message));
-  live.onerror = ()=>{
-    indicator.textContent = 'Reconnecting';
-    refresh().catch(()=>{});
+  if (!state||!navigator.onLine||live) return;
+  const stream=new EventSource('/api/v1/events?after='+(state.events[0]?.id||0));
+  live=stream;
+  stream.onopen=()=>{
+    indicator.textContent='● Event stream connected';
+    refresh().catch(error=>notify(error.message));
+  };
+  stream.onmessage=()=>refresh().catch(error=>notify(error.message));
+  stream.onerror=()=>{
+    if(live!==stream) return;
+    indicator.textContent=navigator.onLine?'Reconnecting':'Offline';
+    if(stream.readyState===EventSource.CLOSED) live=undefined;
+    if(navigator.onLine) scheduleRecovery();
   };
 }
+function scheduleRecovery() {
+  clearTimeout(recoveryTimer);
+  recoveryTimer=setTimeout(()=>{
+    if(state&&navigator.onLine) recover(false);
+  },1800);
+}
+async function recover(force=true) {
+  try {
+    await refresh(force);
+    connect();
+    if(live?.readyState!==EventSource.OPEN) indicator.textContent='Reconnecting';
+  } catch(error) {
+    if(state) scheduleRecovery();
+    else if(!main.querySelector('[data-form="login"]')){
+      indicator.textContent=navigator.onLine?'Unavailable':'Offline';
+      main.innerHTML=title('Workspace unavailable','Connect to your private network, then try again.')+
+        panel(button('Retry connection','recover','',true));
+    }
+  }
+}
+window.addEventListener('offline',()=>{
+  indicator.textContent='Offline';
+  live?.close();
+  live=undefined;
+  clearTimeout(recoveryTimer);
+});
+window.addEventListener('online',()=>{
+  indicator.textContent='Reconnecting';
+  recover(false);
+});
 const missionRows = missions => missions.map(m=>panel('<div class="row"><div><strong>'+escape(m.objective)+'</strong><p class="status">'+escape(label(m.outcome||m.state))+'</p></div>'+button('Inspect','inspect',m.id)+'</div>')).join('');
 function graphView(mission) {
   if(!mission.repository) return '<div class="steps">'+state.plan.map((step,index)=>panel('<div class="step"><strong>'+step.role+'</strong><p>'+step.task+'</p><small>'+(index ? 'Depends on '+state.plan[index-1].role : 'First step')+'</small><p class="status">'+(index<mission.step?'Executed':index===mission.step&&mission.state==='awaiting_approval'?'Awaiting approval':index===mission.step&&['queued','running'].includes(mission.state)?'Pending':'Unexecuted')+'</p></div>')).join('')+'</div>';
@@ -107,14 +151,14 @@ const views = [
     panel('<form data-form="skill"><label for="name">Skill name</label><input id="name" name="name" maxlength="80" required><label for="description">Description</label><textarea id="description" name="description" maxlength="1000" required></textarea><label for="skill-tool">Requested read-only capability</label><select id="skill-tool" name="tool"><option value="catalog_commit">Inventory tracked files</option><option value="read_tracked_text">Read tracked text</option><option value="recheck_citations">Recheck citations</option></select><button class="primary">Save draft version</button></form>')+
     (state.skills.map(s=>panel('<h2>'+escape(s.name)+' · v'+s.version+'</h2><p>'+escape(s.description)+'</p><p><small>Draft · '+escape(s.tool)+'</small></p><button type="button" data-action="test-skill" data-name="'+escape(s.name)+'" data-version="'+s.version+'">Test permission</button>')).join('')||empty('No skill drafts.')),
   () => title('Approval Center','Review execution scope and decide whether the verifier may run.')+
-    (state.missions.filter(m=>m.approval).map(m=>panel('<h2>'+escape(m.objective)+'</h2><p>'+(m.repository?'Inspect '+escape(m.repository)+' at '+escape(m.revision)+' using '+escape(m.provider)+'. '+(m.provider==='openai'?'Approval sends the objective and selected redacted text to OpenAI.':'The deterministic provider processes evidence locally.'):'Run the bundled receipt calculator with fixed in-memory inputs. The sample uses no file writes or network.')+'</p><p class="status">'+escape(label(m.approval))+'</p><small>Expires '+escape(date(m.expires))+'</small>'+
+    (state.missions.filter(m=>m.approval).map(m=>panel('<h2>'+escape(m.objective)+'</h2><p>'+(m.repository?'Inspect '+escape(m.repository)+' at '+escape(m.revision)+' using '+escape(m.provider)+'. '+(m.provider!=='mock'?'Approval sends the objective and selected redacted text to the configured inference provider.':'The deterministic provider processes evidence locally.'):'Run the bundled receipt calculator with fixed in-memory inputs. The sample uses no file writes or network.')+'</p><p class="status">'+escape(label(m.approval))+'</p><small>Expires '+escape(date(m.expires))+'</small>'+
       (m.state==='awaiting_approval'?'<p>'+button(m.repository?'Approve inspection':'Approve verification','approve',m.id,true)+button('Deny','deny',m.id)+'</p>':''))).join('')||empty('No approval requests.')),
   () => title('Artifact Workspace','Inspect and download verification evidence with its SHA-256 digest.')+
     (state.artifacts.map(a=>panel('<h2>'+escape(state.missions.find(m=>m.id===a.mission)?.objective)+'</h2><pre>'+a.hash+'</pre>'+button('Inspect evidence','artifact',a.mission)+button('Download JSON','download',a.mission)+'<div id="artifact-'+a.mission+'"></div>')).join('')||empty('Completed verification reports appear here.')),
   () => title('System Settings','Review runtime limits and control owner sessions.')+
-    panel('<h2>Model provider</h2><p class="status">'+escape(state.provider.name)+' · '+escape(state.provider.model||'Model missing')+' · '+(state.provider.ready?'Configured':'Configuration incomplete')+'</p><p>Mission budget '+(state.provider.maxBudget/1000000).toFixed(3)+' USD estimate · '+state.provider.maxInput+' input / '+state.provider.maxOutput+' output tokens per request · '+(state.provider.timeout/1000)+'s timeout</p><p>Provider and credentials are configured on the server. Repository isolation is '+(state.sandboxAvailable?'available.':'unavailable.')+'</p>')+
+    panel('<h2>Model provider</h2><p class="status">'+escape(state.provider.name)+' · '+escape(state.provider.model||'Model missing')+' · '+(state.provider.ready?'Configured':'Unavailable')+'</p><p>'+(state.provider.name==='openai'?'Mission budget '+(state.provider.maxBudget/1000000).toFixed(3)+' USD estimate · ':'')+state.provider.maxInput+' input / '+state.provider.maxOutput+' output tokens per request · '+(state.provider.timeout/1000)+'s timeout</p>'+(state.provider.daily?'<p>UTC daily reservations '+state.provider.usage.requests+' / '+state.provider.daily.requests+' requests and '+state.provider.usage.tokens+' / '+state.provider.daily.tokens+' tokens.</p>':'')+'<p>Provider and credentials are configured on the server. Repository isolation is '+(state.sandboxAvailable?'available.':'unavailable.')+'</p>')+
     panel('<h2>Dispatch is '+(state.paused?'paused':'enabled')+'</h2><form data-form="settings"><label for="reauth">Confirm owner password</label><input id="reauth" name="password" type="password" autocomplete="current-password" required><button name="intent" value="dispatch">'+(state.paused?'Resume dispatch':'Pause dispatch')+'</button><button name="intent" value="revoke">Revoke all sessions</button></form>')+
-    panel('<h2>Current session</h2>'+button('Sign out','logout'))
+    panel('<h2>Current session</h2><p>'+ (state.remoteAccess?'Private HTTPS · Owner session expires 30 minutes after sign-in.':'Local access · Owner session expires 30 minutes after sign-in.')+'</p>'+button('Sign out','logout'))
 ];
 function render(force=false) {
   if (!state) return;
@@ -171,6 +215,7 @@ main.addEventListener('click',async event=>{
   const {action,id}=control.dataset;
   control.disabled=true;
   try {
+    if(action==='recover') { await recover(); return; }
     if(action==='inspect') { selected=id; location.hash='mission-canvas'; await refresh(true); return; }
     if(action==='test-skill') {
       const result=await api('/skills/test','POST',{name:control.dataset.name,version:Number(control.dataset.version)});
@@ -202,5 +247,4 @@ main.addEventListener('focusout',()=>setTimeout(()=>{
   if(state && pendingRender && !main.contains(document.activeElement)) render();
 },50));
 window.addEventListener('hashchange',()=>render(true));
-try { await refresh(true); connect(); }
-catch(error) { if(nav.hidden && !main.querySelector('form')) { main.innerHTML=title('Workspace unavailable','Reload when the local service is running.'); notify(error.message); } }
+await recover();

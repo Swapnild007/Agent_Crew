@@ -4,18 +4,19 @@ import { resolve } from 'node:path';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { createRuntime, digest, plan } from './runtime.mjs';
+import { remotePolicy } from './remote.mjs';
 import { createProvider } from './provider.mjs';
 import { readCredential, storeCredential } from './credentials.mjs';
 import { createRepositoryInspector, identifier, redact } from './repository.mjs';
 import { capabilities, createInvestigation } from './investigation.mjs';
 
 process.umask(0o077);
-const data = resolve(process.env.AGENT_CREW_DATA || 'data');
+const data = resolve(process.env.AGENT_CREW_DATA || process.env.STATE_DIRECTORY || 'data');
 mkdirSync(data,{recursive:true,mode:0o700});
 const db = new DatabaseSync(resolve(data,'crew.sqlite'));
 chmodSync(resolve(data,'crew.sqlite'),0o600);
 db.exec('PRAGMA busy_timeout=4000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON');
-const versions = ['schema.sql','migrations/002.sql'];
+const versions = ['schema.sql','migrations/002.sql','migrations/003.sql'];
 db.exec('BEGIN IMMEDIATE');
 try {
   const version=db.prepare('PRAGMA user_version').get().user_version;
@@ -90,8 +91,10 @@ if(process.argv[2]==='repository'){
 const sandboxAvailable=await inspector.status();
 const serializeMission=({lease,lease_until,plan_attempts,...publicFields})=>publicFields;
 const port = Number(process.env.PORT || 4317);
-const origin = 'http://127.0.0.1:'+port;
-const cookie = 'crew_session';
+const access=remotePolicy(process.env,port);
+const {origin,cookie}=access;
+const cookieFlags='; HttpOnly; SameSite=Strict; Path=/'+(access.secure?'; Secure':'');
+let lastDenied=0;
 const json = (res,status,value) => {
   res.writeHead(status,{'Content-Type':'application/json; charset=utf-8'});
   res.end(JSON.stringify(value));
@@ -135,10 +138,10 @@ function session(req) {
   const token = (req.headers.cookie || '').split(';').map(item=>item.trim()).find(item=>item.startsWith(cookie+'='))?.slice(cookie.length+1);
   if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
   const hash = digest(token);
-  return db.prepare('SELECT hash FROM sessions WHERE hash=? AND expires>?').get(hash,Date.now())?.hash;
+  return db.prepare('SELECT hash FROM sessions WHERE hash=? AND expires>? AND scope=?').get(hash,Date.now(),access.scope)?.hash;
 }
 const staticFiles = new Map([
-  ['/', ['index.html','text/html']], ['/app.js',['app.js','text/javascript']], ['/style.css',['style.css','text/css']]
+  ['/', ['index.html','text/html']], ['/app.js',['app.js','text/javascript']], ['/style.css',['style.css','text/css']], ['/manifest.webmanifest',['manifest.webmanifest','application/manifest+json']], ['/icon.svg',['icon.svg','image/svg+xml']]
 ].map(([route,[name,type]])=>[route,[readFileSync(new URL('./public/'+name,import.meta.url)),type]]));
 const api = '/api/v1';
 const streamCounts = new Map();
@@ -152,12 +155,14 @@ function stream(req,res,url) {
   streamCounts.set(identity,count+1);
   res.writeHead(200,{'Content-Type':'text/event-stream','X-Accel-Buffering':'no'});
   res.write(': connected\n\n');
+  let heartbeat=Date.now();
   const timer = setInterval(()=>{
     if (!session(req) || res.writableLength > 512000) return res.end();
     for (const item of recentEvents.all(cursor)) {
       res.write('id: '+item.id+'\ndata: '+JSON.stringify(item)+'\n\n');
       cursor = item.id;
     }
+    if(Date.now()-heartbeat>=15000){ res.write(': keepalive\n\n'); heartbeat=Date.now(); }
   },500);
   res.on('close',()=>{
     clearInterval(timer);
@@ -170,8 +175,15 @@ async function route(req,res) {
   res.setHeader('Cache-Control','no-store');
   res.setHeader('X-Content-Type-Options','nosniff');
   res.setHeader('Referrer-Policy','no-referrer');
-  res.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
-  if (req.headers.host !== '127.0.0.1:'+port) throw issue(403,'Invalid host');
+  res.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; manifest-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
+  if(access.secure) res.setHeader('Strict-Transport-Security','max-age=31536000');
+  if(!access.permit(req)){
+    if(access.secure&&Date.now()-lastDenied>=15000){
+      lastDenied=Date.now();
+      audit('remote_access_denied','Tailnet owner identity or trusted HTTPS context required');
+    }
+    throw issue(403,'Access denied');
+  }
   const url = new URL(req.url,origin);
   const path = url.pathname;
   const method = req.method;
@@ -195,9 +207,9 @@ async function route(req,res) {
     const token = randomBytes(32).toString('hex');
     db.exec('DELETE FROM auth_limit');
     db.prepare('DELETE FROM sessions WHERE expires<=?').run(now);
-    db.prepare('INSERT INTO sessions VALUES(?,?)').run(digest(token),now+1800000);
+    db.prepare('INSERT INTO sessions(hash,expires,scope) VALUES(?,?,?)').run(digest(token),now+1800000,access.scope);
     audit('login','Owner session issued');
-    res.setHeader('Set-Cookie',cookie+'='+token+'; HttpOnly; SameSite=Strict; Path=/; Max-Age=1800');
+    res.setHeader('Set-Cookie',cookie+'='+token+cookieFlags+'; Max-Age=1800');
     return json(res,200,{ok:true});
   }
   const identity = session(req);
@@ -213,8 +225,10 @@ async function route(req,res) {
       missions:db.prepare('SELECT * FROM missions ORDER BY created DESC').all().map(serializeMission),
       repositories:db.prepare('SELECT name,revision FROM repositories ORDER BY name').all(),
       agents:investigation.agentConfig(),
-      provider:provider.status,
+      provider:{...provider.status,usage:provider.daily?(db.prepare('SELECT requests,tokens FROM provider_daily WHERE provider=? AND day=?')
+        .get(provider.name,new Date().toISOString().slice(0,10))||{requests:0,tokens:0}):null},
       sandboxAvailable,
+      remoteAccess:access.secure,
       graph:url.searchParams.get('graph')?investigation.publicNodes(url.searchParams.get('graph')):[],
       events:db.prepare('SELECT * FROM events ORDER BY id DESC LIMIT 150').all(),
       artifacts:db.prepare('SELECT mission,hash FROM artifacts').all(),
@@ -316,7 +330,7 @@ async function route(req,res) {
       revoke();
     } else db.prepare('DELETE FROM sessions WHERE hash=?').run(identity);
     audit('logout','Owner session revoked');
-    res.setHeader('Set-Cookie',cookie+'=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+    res.setHeader('Set-Cookie',cookie+'='+cookieFlags+'; Max-Age=0');
     return json(res,200,{ok:true});
   }
   throw issue(404,'Route not found');
