@@ -25,3 +25,19 @@ test('remote trust requires an exact tailnet hostname, owner and HTTPS loopback 
   assert.equal(local.permit(request),true);
   assert.equal(local.secure,false);
 });
+
+test('Codespaces origin is derived from platform settings and never grants an app session',()=>{
+  const env={CODESPACES:'true',CODESPACE_NAME:'sample-qa',GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:'app.github.dev'};
+  const policy=remotePolicy(env,4317);
+  assert.equal(policy.origin,'https://sample-qa-4317.app.github.dev');
+  assert.equal(policy.cookie,'__Host-crew_session');
+  const request={socket:{remoteAddress:'127.0.0.1'},headers:{host:'sample-qa-4317.app.github.dev'}};
+  assert.equal(policy.permit(request),true);
+  assert.equal(policy.permit({...request,headers:{host:'127.0.0.1:4317'}}),false);
+  assert.equal(policy.permit({...request,headers:{host:'127.0.0.1:4317','x-forwarded-host':'sample-qa-4317.app.github.dev','x-forwarded-proto':'https'}}),true);
+  assert.equal(policy.permit({...request,headers:{...request.headers,'x-forwarded-proto':'http'}}),false);
+  assert.equal(policy.permit({...request,socket:{remoteAddress:'192.0.2.1'}}),false);
+  assert.throws(()=>remotePolicy(env,9999));
+  assert.throws(()=>remotePolicy({...env,GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:'untrusted.example'},4317));
+  assert.throws(()=>remotePolicy({...env,AGENT_CREW_PUBLIC_ORIGIN:'https://host.tailnet.ts.net'},4317));
+});

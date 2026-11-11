@@ -44,6 +44,11 @@ jobs:
       - run: python test/mobile.py
         env:
           AGENT_CREW_SCREENSHOTS: docs/screenshots
+      - name: Android-compatible Chromium against the Codespaces HTTPS proxy fixture
+        run: python test/mobile.py
+        env:
+          AGENT_CREW_TEST_CODESPACE: '1'
+          AGENT_CREW_SCREENSHOTS: docs/screenshots
       - uses: actions/upload-artifact@v4
         with:
           name: agent-crew-browser-screenshots
@@ -61,3 +66,26 @@ jobs:
               print('No secret findings')
           raise SystemExit(bool(hits))
           PYTHON
+
+  codespace-image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build minimal Codespaces image
+        run: docker build --tag agent-crew-codespace --file .devcontainer/Dockerfile .
+      - name: Probe the unprivileged container
+        run: >
+          docker run --rm
+          --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspaces/Agent_Crew,readonly"
+          --workdir /workspaces/Agent_Crew
+          --env CODESPACES=true --env CODESPACE_NAME=agent-crew-qa
+          --env GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN=app.github.dev
+          agent-crew-codespace npm run codespace:check
+      - name: Test Codespaces access, backup, and repository policy in the image
+        run: >
+          docker run --rm
+          --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspaces/Agent_Crew,readonly"
+          --workdir /workspaces/Agent_Crew
+          agent-crew-codespace node --test test/remote.test.mjs test/backup.test.mjs test/repository.test.mjs test/codespace.test.mjs

@@ -60,6 +60,9 @@ if(process.argv[2]==='store-openai-credential'){
   console.log('Encrypted OpenAI credential stored.');
   process.exit(0);
 }
+if(process.env.CODESPACES==='true' &&
+  ((process.env.AGENT_CREW_PROVIDER||'mock')!=='mock'||process.env.AGENT_CREW_ALLOW_PAID==='1'))
+  throw new Error('Codespaces only enables the deterministic provider');
 const configuredKey=process.env.AGENT_CREW_PROVIDER==='openai'&&!process.env.AGENT_CREW_OPENAI_KEY
   ? readCredential(data,process.env.AGENT_CREW_SECRET_KEY) : undefined;
 const provider=createProvider({env:{...process.env,AGENT_CREW_OPENAI_KEY:process.env.AGENT_CREW_OPENAI_KEY||configuredKey}});
@@ -180,7 +183,7 @@ async function route(req,res) {
   if(!access.permit(req)){
     if(access.secure&&Date.now()-lastDenied>=15000){
       lastDenied=Date.now();
-      audit('remote_access_denied','Tailnet owner identity or trusted HTTPS context required');
+      audit('remote_access_denied','Trusted private HTTPS context required');
     }
     throw issue(403,'Access denied');
   }
@@ -229,6 +232,7 @@ async function route(req,res) {
         .get(provider.name,new Date().toISOString().slice(0,10))||{requests:0,tokens:0}):null},
       sandboxAvailable,
       remoteAccess:access.secure,
+      accessMode:access.kind|| (access.secure?'tailnet':'local'),
       graph:url.searchParams.get('graph')?investigation.publicNodes(url.searchParams.get('graph')):[],
       events:db.prepare('SELECT * FROM events ORDER BY id DESC LIMIT 150').all(),
       artifacts:db.prepare('SELECT mission,hash FROM artifacts').all(),

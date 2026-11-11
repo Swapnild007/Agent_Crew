@@ -16,7 +16,8 @@ import time
 from playwright.sync_api import sync_playwright, expect
 
 ROOT = Path(__file__).resolve().parents[1]
-HOST = 'agent-crew.qa.ts.net'
+CODESPACE = os.environ.get('AGENT_CREW_TEST_CODESPACE') == '1'
+HOST = 'agent-crew-qa-4317.app.github.dev' if CODESPACE else 'agent-crew.qa.ts.net'
 OWNER = 'owner@example.invalid'
 PASSWORD = secrets.token_hex(24)
 
@@ -28,7 +29,7 @@ def free_port():
 
 
 class TailnetProxy(BaseHTTPRequestHandler):
-    """Test equivalent of Serve's HTTPS and header contract, with no external tailnet."""
+    """Local HTTPS proxy for the selected private-access contract."""
     protocol_version = 'HTTP/1.1'
 
     def forward(self):
@@ -38,7 +39,13 @@ class TailnetProxy(BaseHTTPRequestHandler):
             if key in self.headers
         }
         headers.update({'Host': self.headers['Host'], 'X-Forwarded-Proto': 'https', 'X-Forwarded-Host': self.headers['Host']})
-        if self.server.login:
+        if CODESPACE:
+            if self.server.login != OWNER:
+                self.send_response(403)
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+        elif self.server.login:
             headers['Tailscale-User-Login'] = self.server.login
         upstream = http.client.HTTPConnection('127.0.0.1', self.server.backend, timeout=22)
         try:
@@ -74,7 +81,7 @@ class TailnetProxy(BaseHTTPRequestHandler):
 
 def request(port, path, method='GET', headers=None, data=None):
     connection = http.client.HTTPSConnection('127.0.0.1', port, context=ssl._create_unverified_context(), timeout=5)
-    request_headers = {'Host': f'{HOST}:{port}', **(headers or {})}
+    request_headers = {'Host': HOST if CODESPACE else f'{HOST}:{port}', **(headers or {})}
     try:
         connection.request(method, path, body=data, headers=request_headers)
         reply = connection.getresponse()
@@ -108,10 +115,15 @@ with tempfile.TemporaryDirectory() as directory:
     temp = Path(directory)
     server = ThreadingHTTPServer(('127.0.0.1', 0), TailnetProxy)
     server.login = OWNER
-    server.backend = free_port()
-    origin = f'https://{HOST}:{server.server_port}'
+    server.backend = 4317 if CODESPACE else free_port()
+    origin = f'https://{HOST}' if CODESPACE else f'https://{HOST}:{server.server_port}'
     env = dict(os.environ, AGENT_CREW_DATA=str(temp / 'data'), PORT=str(server.backend),
-               AGENT_CREW_PROVIDER='mock', AGENT_CREW_PUBLIC_ORIGIN=origin, AGENT_CREW_TAILSCALE_OWNER=OWNER)
+               AGENT_CREW_PROVIDER='mock')
+    if CODESPACE:
+        env.update(CODESPACES='true', CODESPACE_NAME='agent-crew-qa',
+                   GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN='app.github.dev')
+    else:
+        env.update(AGENT_CREW_PUBLIC_ORIGIN=origin, AGENT_CREW_TAILSCALE_OWNER=OWNER)
     subprocess.run(['openssl', 'req', '-x509', '-nodes', '-newkey', 'rsa:2048', '-days', '1',
                     '-subj', f'/CN={HOST}', '-addext', f'subjectAltName=DNS:{HOST}',
                     '-keyout', str(temp / 'key.pem'), '-out', str(temp / 'cert.pem')],
@@ -141,8 +153,9 @@ with tempfile.TemporaryDirectory() as directory:
         else:
             raise AssertionError('Remote-mode server did not start')
         with sync_playwright() as playwright:
+            endpoint = f'127.0.0.1:{server.server_port}' if CODESPACE else '127.0.0.1'
             chromium = playwright.chromium.launch(executable_path=os.environ.get('CHROMIUM_PATH'), args=[
-                f'--host-resolver-rules=MAP {HOST} 127.0.0.1', '--no-proxy-server'])
+                f'--host-resolver-rules=MAP {HOST} {endpoint}', '--no-proxy-server'])
             profile = {**playwright.devices['Pixel 7'], 'ignore_https_errors': True, 'accept_downloads': True}
             phone = chromium.new_context(**profile)
             page = phone.new_page()
@@ -177,6 +190,11 @@ with tempfile.TemporaryDirectory() as directory:
             rejected = sample(page, 'Reject the sample review')
             rejected.get_by_role('button', name='Deny').tap(timeout=15000)
             expect(rejected.get_by_text('deny', exact=True)).to_be_visible()
+            if CODESPACE:
+                navigate(page, 'Memory Vault')
+                page.get_by_label('New note').fill('Private Codespaces checkpoint')
+                page.get_by_role('button', name='Save note').tap()
+                expect(page.get_by_text('Private Codespaces checkpoint', exact=True)).to_be_visible()
             navigate(page, 'Mission Control')
             if repository:
                 page.get_by_label('Review objective').fill('Inspect README.md and documentation')
@@ -199,7 +217,7 @@ with tempfile.TemporaryDirectory() as directory:
             shots = os.environ.get('AGENT_CREW_SCREENSHOTS')
             if shots:
                 Path(shots).mkdir(parents=True, exist_ok=True)
-                page.screenshot(path=str(Path(shots) / 'android-mission.png'))
+                page.screenshot(path=str(Path(shots) / ('codespaces-mission.png' if CODESPACE else 'android-mission.png')))
             navigate(page, 'Artifact Workspace')
             page.get_by_role('button', name='Inspect evidence').tap()
             expected = 'README.md' if repository else '"actual": 700'
@@ -209,7 +227,7 @@ with tempfile.TemporaryDirectory() as directory:
             result = json.loads(download.value.path().read_text())
             assert len(result['hash']) == 64
             if shots:
-                page.screenshot(path=str(Path(shots) / 'android-evidence.png'))
+                page.screenshot(path=str(Path(shots) / ('codespaces-evidence.png' if CODESPACE else 'android-evidence.png')))
 
             # Expire the active session in the test database without changing production TTL.
             with sqlite3.connect(temp / 'data' / 'crew.sqlite', timeout=5) as database:
@@ -234,7 +252,7 @@ with tempfile.TemporaryDirectory() as directory:
                 }, data=json.dumps({'password': PASSWORD[1:]}))[0] == expected_status
             assert not errors, errors
             chromium.close()
-            print('Private HTTPS mobile Chromium workflow passed, including offline recovery, expiry, revocation and download')
+            print(('Codespaces proxy fixture' if CODESPACE else 'Tailnet proxy fixture') + ': private HTTPS mobile Chromium workflow passed')
     finally:
         app.terminate()
         app.wait(timeout=10)

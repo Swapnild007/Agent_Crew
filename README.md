@@ -53,3 +53,7 @@ Only non-secret status appears in System Settings. Restart to load changed envir
 ## Android and private cloud access
 
 See the [mobile deployment and ₹0 feasibility assessment](docs/mobile-deployment.md) for the conditional OCI and Tailscale design, service configuration, owner provisioning, and inference options. Use `python test/mobile.py` for an HTTPS Chromium test with the Pixel 7 touch profile. It exercises a local TLS test proxy that implements the Serve header contract. It does not require a cloud account or represent a live tailnet or physical Android test.
+
+### Android with no payment method
+
+Use the [on-demand Codespaces guide](docs/codespaces-android.md) for the private forwarded port, deterministic provider, sandbox compatibility check, and encrypted backup and restore. The Codespace is an interactive development environment with a monthly free quota and idle shutdown.

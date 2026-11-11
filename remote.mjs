@@ -1,5 +1,27 @@
 export function remotePolicy(env,port) {
   const local='http://127.0.0.1:'+port;
+  if(env.CODESPACES==='true'){
+    const name=env.CODESPACE_NAME;
+    if(port!==4317||!/^[a-z0-9][a-z0-9-]{0,62}$/.test(name||'')||
+      env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN!=='app.github.dev'||
+      env.AGENT_CREW_PUBLIC_ORIGIN||env.AGENT_CREW_TAILSCALE_OWNER)
+      throw new Error('Codespaces requires its assigned private HTTPS origin and port 4317');
+    const host=name+'-'+port+'.app.github.dev';
+    const origin='https://'+host;
+    return {
+      origin,scope:origin,cookie:'__Host-crew_session',secure:true,kind:'codespaces',
+      permit(req) {
+        const headers=req.headers;
+        const forwardedHost=headers['x-forwarded-host'];
+        const forwardedProtocol=headers['x-forwarded-proto'];
+        const external=headers.host===host&&(!forwardedHost||forwardedHost===host);
+        const rewritten=[new URL(local).host,'localhost:'+port].includes(headers.host)&&
+          forwardedHost===host&&forwardedProtocol==='https';
+        return req.socket.remoteAddress==='127.0.0.1' &&
+          (!forwardedProtocol||forwardedProtocol==='https') && (external||rewritten);
+      }
+    };
+  }
   const configured=env.AGENT_CREW_PUBLIC_ORIGIN;
   const owner=env.AGENT_CREW_TAILSCALE_OWNER;
   if(!configured&&!owner) return {
