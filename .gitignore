@@ -1,6 +1,0 @@
-data/
-.env
-node_modules/
-__pycache__/
-docs/screenshots/
-*.crew-backup
