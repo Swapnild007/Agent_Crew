@@ -50,7 +50,7 @@ add(4,auth&&!rate?"WARN":"INFO","OTP/login abuse protection",auth?(rate?"Rate-li
 
 const injection=/(?:query|execute|raw)\s*\(\s*["'][^"']*["']\s*\+\s*(?:req|request|params|query|body)/i.test(code)||/(?:exec|execSync|spawn|system|popen)\s*\([^)]*(?:req\.|request\.|params\.|query\.|body\.)/i.test(code);
 if(injection)add(5,"FAIL","Possible injection sink","Replace direct request-to-query/command construction with parameterized/allowlisted APIs.");
-const xss=files.find(f=>/dangerouslySetInnerHTML|\.innerHTML\s*=|document\.write\s*\(/i.test(f.text));
+const xss=files.find(f=>f.rel!=="scripts/security-audit.mjs"&&/dangerouslySetInnerHTML|\.innerHTML\s*=|document\.write\s*\(/i.test(f.text));
 if(xss)add(5,"WARN","Potential XSS sink",xss.rel+" requires trusted sanitization/encoding.");
 const upload=has(/\b(multer|upload|request\.files|req\.files|FileUpload|multipart|formidable|busboy)\b/i);
 const uploadGuard=has(/\b(fileSize|maxFileSize|mime|mimetype|contentType|allowedTypes|allowlist|extension|filename|sanitize)\b/i);
@@ -71,7 +71,7 @@ add(8,backend&&!headers?"WARN":"INFO","HTTPS + security headers",backend&&!heade
 
 for(const wf of files.filter(f=>/^\.github\/workflows\/.*\.ya?ml$/i.test(f.rel))){
  for(const line of wf.text.split(/\r?\n/)){
-  const m=line.match(/^\s*uses:\s*([^#\s]+)@([^\s#]+)/);
+  const m=line.match(/^\s*(?:-\s*)?uses:\s*([^#\s]+)@([^\s#]+)/);
   if(m&&!/^[0-9a-f]{40}$/i.test(m[2].replace(/["']/g,"")))add(9,"FAIL","Mutable GitHub Action",wf.rel+": "+m[1]+"@"+m[2]+" — pin to full SHA.");
  }
 }
